@@ -3,10 +3,13 @@ const OpenAI = require('openai');
 class AIEngine {
   constructor(db) {
     this.db = db;
-    this.openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    this.openai = process.env.OPENAI_API_KEY
+      ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
+      : null;
     this.configCache = null;
     this.configCacheTime = 0;
     this.CONFIG_TTL = 60000;
+    if (!this.openai) console.warn('[AI] OPENAI_API_KEY not set — AI responses disabled until configured');
   }
 
   async getConfig() {
@@ -149,6 +152,11 @@ ${policies}
       } else {
         cleanMessages[cleanMessages.length - 1].content += '\n' + messages[i].content;
       }
+    }
+
+    if (!this.openai) {
+      console.error('[AI] OpenAI client not initialized — missing API key');
+      return this.getFallbackResponse();
     }
 
     try {
