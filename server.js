@@ -182,10 +182,33 @@ function sleep(ms) {
 // ── Start ──
 const PORT = process.env.PORT || 3001;
 
+async function initDatabase() {
+  const fs = require('fs');
+  const path = require('path');
+  const bcrypt = require('bcryptjs');
+
+  const schema = fs.readFileSync(path.join(__dirname, 'src/config/schema.sql'), 'utf8');
+  await db.query(schema);
+  console.log('[DB] Schema ready');
+
+  const email = process.env.ADMIN_EMAIL || 'admin@mycellulardepot.com';
+  const password = process.env.ADMIN_PASSWORD || 'changeme123';
+  const hash = await bcrypt.hash(password, 12);
+
+  await db.query(
+    `INSERT INTO admin_users (email, password_hash, name, role)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (email) DO NOTHING`,
+    [email, hash, 'Admin', 'superadmin']
+  );
+  console.log('[DB] Admin user ready');
+}
+
 async function start() {
   try {
     await db.query('SELECT 1');
     console.log('[DB] Connected to PostgreSQL');
+    await initDatabase();
   } catch (err) {
     console.error('[DB] Connection failed:', err.message);
     console.log('[DB] Server starting without database - some features will be limited');
