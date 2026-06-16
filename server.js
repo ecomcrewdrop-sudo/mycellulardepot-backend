@@ -26,6 +26,7 @@ const server = http.createServer(app);
 
 const allowedOrigins = [
   process.env.FRONTEND_URL,
+  'https://systemmycellulardepot.netlify.app',
   'http://localhost:5173',
   'http://localhost:3000'
 ].filter(Boolean);
