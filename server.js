@@ -90,11 +90,10 @@ io.on('connection', (socket) => {
 
 // ── WhatsApp Message Handler ──
 async function handleIncomingMessage(message) {
-  const { from, body, type, messageId } = message;
-  const phone = from.replace('@c.us', '');
+  const { from, phone, contactName, body, type, messageId } = message;
 
   try {
-    let customer = await services.crm.findOrCreateCustomer(phone);
+    let customer = await services.crm.findOrCreateCustomer(phone, contactName);
     let conversation = await services.crm.getActiveConversation(customer.id);
 
     if (!conversation) {
@@ -109,7 +108,7 @@ async function handleIncomingMessage(message) {
       conversationId: conversation.id,
       customerId: customer.id,
       phone,
-      customerName: customer.name || phone,
+      customerName: customer.name || contactName || phone,
       content: body,
       sender: 'customer',
       timestamp: new Date().toISOString()

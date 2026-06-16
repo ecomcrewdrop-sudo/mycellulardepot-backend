@@ -11,6 +11,7 @@ class WhatsAppService {
     this.reconnectAttempts = 0;
     this.maxReconnectAttempts = 10;
     this.connectedPhone = null;
+    this.readyTimestamp = null;
   }
 
   async initialize() {
@@ -54,6 +55,7 @@ class WhatsAppService {
     this.client.on('ready', () => {
       console.log('[WA] Client is ready!');
       this.status = 'connected';
+      this.readyTimestamp = Math.floor(Date.now() / 1000);
       this.lastQR = null;
       this.reconnectAttempts = 0;
       this.connectedPhone = this.client.info?.wid?.user || null;
@@ -87,11 +89,25 @@ class WhatsAppService {
     this.client.on('message', async (msg) => {
       if (msg.from === 'status@broadcast') return;
       if (msg.fromMe) return;
+      if (msg.isStatus) return;
+
+      // Ignore old messages from before the system was ready
+      if (this.readyTimestamp && msg.timestamp < this.readyTimestamp) return;
+
+      // Ignore group messages
+      if (msg.from.endsWith('@g.us')) return;
+
+      // Extract clean phone number
+      const contact = await msg.getContact();
+      const phone = this.extractPhone(msg.from, contact);
+      const contactName = contact?.pushname || contact?.name || null;
 
       if (this.messageHandler) {
         try {
           await this.messageHandler({
             from: msg.from,
+            phone,
+            contactName,
             body: msg.body || '',
             type: msg.type,
             messageId: msg.id._serialized,
@@ -118,6 +134,24 @@ class WhatsAppService {
       this.status = 'error';
       this.io.emit('wa-status', { status: 'error', error: err.message });
     }
+  }
+
+  extractPhone(waId, contact) {
+    // Try to get number from contact first
+    if (contact?.number) return contact.number;
+
+    // Clean the WhatsApp ID
+    let phone = waId
+      .replace('@c.us', '')
+      .replace('@s.whatsapp.net', '')
+      .replace('@lid', '')
+      .replace('@g.us', '');
+
+    // If it looks like a real phone number (digits only, 7-15 chars), use it
+    if (/^\d{7,15}$/.test(phone)) return phone;
+
+    // Fallback
+    return phone;
   }
 
   async attemptReconnect() {

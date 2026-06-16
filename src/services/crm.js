@@ -3,25 +3,33 @@ class CRMService {
     this.db = db;
   }
 
-  async findOrCreateCustomer(phone) {
+  async findOrCreateCustomer(phone, contactName = null) {
     const { rows } = await this.db.query(
       'SELECT * FROM customers WHERE phone = $1',
       [phone]
     );
 
     if (rows.length > 0) {
+      const updates = ['last_contact = NOW()'];
+      const params = [];
+      if (contactName && !rows[0].name) {
+        params.push(contactName);
+        updates.push(`name = $${params.length}`);
+      }
+      params.push(rows[0].id);
       await this.db.query(
-        'UPDATE customers SET last_contact = NOW(), total_conversations = total_conversations + 0 WHERE id = $1',
-        [rows[0].id]
+        `UPDATE customers SET ${updates.join(', ')} WHERE id = $${params.length}`,
+        params
       );
+      if (contactName && !rows[0].name) rows[0].name = contactName;
       return rows[0];
     }
 
     const { rows: newRows } = await this.db.query(
-      `INSERT INTO customers (phone, first_contact, last_contact)
-       VALUES ($1, NOW(), NOW())
+      `INSERT INTO customers (phone, name, first_contact, last_contact)
+       VALUES ($1, $2, NOW(), NOW())
        RETURNING *`,
-      [phone]
+      [phone, contactName]
     );
     return newRows[0];
   }

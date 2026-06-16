@@ -93,4 +93,25 @@ router.post('/:id/send', async (req, res) => {
   }
 });
 
+router.delete('/cleanup/old', async (req, res) => {
+  try {
+    const { rows: convRows } = await req.services.db.query(
+      `DELETE FROM conversations WHERE phone LIKE '%@lid%' OR phone LIKE '%@g.us%' RETURNING id`
+    );
+
+    const { rows: custRows } = await req.services.db.query(
+      `DELETE FROM customers WHERE phone LIKE '%@lid%' OR phone LIKE '%@g.us%' OR phone LIKE '%:%' RETURNING id`
+    );
+
+    res.json({
+      message: 'Datos antiguos eliminados',
+      conversationsDeleted: convRows.length,
+      customersDeleted: custRows.length
+    });
+  } catch (err) {
+    console.error('[Conversations] Cleanup error:', err);
+    res.status(500).json({ error: 'Error limpiando datos' });
+  }
+});
+
 module.exports = router;
