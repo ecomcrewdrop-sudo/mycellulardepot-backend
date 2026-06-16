@@ -118,8 +118,18 @@ router.get('/whatsapp/status', async (req, res) => {
 router.post('/whatsapp/logout', async (req, res) => {
   try {
     await req.services.whatsapp?.logout();
-    res.json({ message: 'WhatsApp desconectado' });
+
+    await req.services.db.query('DELETE FROM messages');
+    await req.services.db.query('DELETE FROM analytics_events');
+    await req.services.db.query('DELETE FROM conversations');
+    await req.services.db.query('DELETE FROM customers');
+    console.log('[WA] Logout: all session data cleared');
+
+    req.services.io.emit('data-reset');
+
+    res.json({ message: 'WhatsApp desconectado y datos limpiados' });
   } catch (err) {
+    console.error('[Settings] Logout error:', err);
     res.status(500).json({ error: 'Error desconectando WhatsApp' });
   }
 });
