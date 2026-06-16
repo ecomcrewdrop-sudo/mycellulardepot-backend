@@ -1,0 +1,25 @@
+{
+  "name": "mycellulardepot-assistant",
+  "version": "1.0.0",
+  "description": "WhatsApp AI Assistant + CRM for MyCellularDepot",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "db:init": "node src/config/init-db.js"
+  },
+  "dependencies": {
+    "openai": "^4.77.0",
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^1.4.5-lts.1",
+    "pg": "^8.13.1",
+    "qrcode": "^1.5.4",
+    "socket.io": "^4.8.1",
+    "whatsapp-web.js": "^1.26.1-alpha.3",
+    "xlsx": "^0.18.5"
+  }
+}
