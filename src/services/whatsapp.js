@@ -12,10 +12,23 @@ class WhatsAppService {
     this.maxReconnectAttempts = 10;
     this.connectedPhone = null;
     this.readyTimestamp = null;
+    this.qrExpireTimer = null;
+    this.connectionStartTime = null;
+    this.isInitializing = false;
   }
 
   async initialize() {
+    if (this.isInitializing) {
+      console.log('[WA] Already initializing, skipping...');
+      return;
+    }
+    this.isInitializing = true;
     console.log('[WA] Initializing WhatsApp client...');
+
+    if (this.client) {
+      try { await this.client.destroy(); } catch {}
+      this.client = null;
+    }
 
     this.client = new Client({
       authStrategy: new LocalAuth({ dataPath: './wa-session' }),
@@ -38,6 +51,15 @@ class WhatsAppService {
     this.client.on('qr', async (qr) => {
       console.log('[WA] QR code received');
       this.status = 'waiting_qr';
+
+      if (this.qrExpireTimer) clearTimeout(this.qrExpireTimer);
+      this.qrExpireTimer = setTimeout(() => {
+        if (this.status === 'waiting_qr') {
+          console.log('[WA] QR expired, waiting for new one...');
+          this.io.emit('wa-status', { status: 'qr_expired' });
+        }
+      }, 45000);
+
       try {
         const qrDataUrl = await QRCode.toDataURL(qr, {
           width: 300,
@@ -56,8 +78,11 @@ class WhatsAppService {
       console.log('[WA] Client is ready!');
       this.status = 'connected';
       this.readyTimestamp = Math.floor(Date.now() / 1000);
+      this.connectionStartTime = Date.now();
       this.lastQR = null;
       this.reconnectAttempts = 0;
+      this.isInitializing = false;
+      if (this.qrExpireTimer) { clearTimeout(this.qrExpireTimer); this.qrExpireTimer = null; }
       this.connectedPhone = this.client.info?.wid?.user || null;
       this.io.emit('wa-status', {
         status: 'connected',
@@ -75,6 +100,7 @@ class WhatsAppService {
     this.client.on('auth_failure', (msg) => {
       console.error('[WA] Auth failure:', msg);
       this.status = 'auth_failed';
+      this.isInitializing = false;
       this.io.emit('wa-status', { status: 'auth_failed', error: msg });
     });
 
@@ -82,6 +108,7 @@ class WhatsAppService {
       console.log('[WA] Disconnected:', reason);
       this.status = 'disconnected';
       this.connectedPhone = null;
+      this.isInitializing = false;
       this.io.emit('wa-status', { status: 'disconnected', reason });
       this.attemptReconnect();
     });
@@ -90,17 +117,24 @@ class WhatsAppService {
       if (msg.from === 'status@broadcast') return;
       if (msg.fromMe) return;
       if (msg.isStatus) return;
-
-      // Ignore old messages from before the system was ready
       if (this.readyTimestamp && msg.timestamp < this.readyTimestamp) return;
-
-      // Ignore group messages
       if (msg.from.endsWith('@g.us')) return;
 
-      // Extract clean phone number
       const contact = await msg.getContact();
       const phone = this.extractPhone(msg.from, contact);
       const contactName = contact?.pushname || contact?.name || null;
+
+      let audioData = null;
+      if (msg.hasMedia && (msg.type === 'ptt' || msg.type === 'audio')) {
+        try {
+          const media = await msg.downloadMedia();
+          if (media && media.data) {
+            audioData = { base64: media.data, mimetype: media.mimetype };
+          }
+        } catch (err) {
+          console.error('[WA] Audio download error:', err.message);
+        }
+      }
 
       if (this.messageHandler) {
         try {
@@ -112,7 +146,8 @@ class WhatsAppService {
             type: msg.type,
             messageId: msg.id._serialized,
             hasMedia: msg.hasMedia,
-            timestamp: msg.timestamp
+            timestamp: msg.timestamp,
+            audioData
           });
         } catch (err) {
           console.error('[WA] Message handler error:', err);
@@ -132,25 +167,21 @@ class WhatsAppService {
     } catch (err) {
       console.error('[WA] Initialization error:', err);
       this.status = 'error';
+      this.isInitializing = false;
       this.io.emit('wa-status', { status: 'error', error: err.message });
     }
   }
 
   extractPhone(waId, contact) {
-    // Try to get number from contact first
     if (contact?.number) return contact.number;
 
-    // Clean the WhatsApp ID
     let phone = waId
       .replace('@c.us', '')
       .replace('@s.whatsapp.net', '')
       .replace('@lid', '')
       .replace('@g.us', '');
 
-    // If it looks like a real phone number (digits only, 7-15 chars), use it
     if (/^\d{7,15}$/.test(phone)) return phone;
-
-    // Fallback
     return phone;
   }
 
@@ -203,9 +234,7 @@ class WhatsAppService {
       const chatId = to.includes('@') ? to : `${to}@c.us`;
       const chat = await this.client.getChatById(chatId);
       await chat.clearState();
-    } catch (err) {
-      // Silently ignore
-    }
+    } catch {}
   }
 
   getStatus() {
@@ -225,6 +254,32 @@ class WhatsAppService {
     };
   }
 
+  getConnectionHealth() {
+    return {
+      status: this.status,
+      uptime: this.connectionStartTime ? Math.floor((Date.now() - this.connectionStartTime) / 1000) : 0,
+      reconnectAttempts: this.reconnectAttempts,
+      phone: this.connectedPhone,
+      name: this.client?.info?.pushname || null,
+      platform: this.client?.info?.platform || null,
+    };
+  }
+
+  async restart() {
+    console.log('[WA] Manual restart requested');
+    this.reconnectAttempts = 0;
+    if (this.client) {
+      try { await this.client.destroy(); } catch {}
+      this.client = null;
+    }
+    this.status = 'disconnected';
+    this.connectedPhone = null;
+    this.lastQR = null;
+    this.isInitializing = false;
+    this.io.emit('wa-status', { status: 'restarting' });
+    await this.initialize();
+  }
+
   async logout() {
     if (this.client) {
       try {
@@ -232,6 +287,7 @@ class WhatsAppService {
         this.status = 'disconnected';
         this.connectedPhone = null;
         this.lastQR = null;
+        this.connectionStartTime = null;
         this.io.emit('wa-status', { status: 'disconnected' });
       } catch (err) {
         console.error('[WA] Logout error:', err);
@@ -240,6 +296,7 @@ class WhatsAppService {
   }
 
   async destroy() {
+    if (this.qrExpireTimer) clearTimeout(this.qrExpireTimer);
     if (this.client) {
       await this.client.destroy();
       this.client = null;

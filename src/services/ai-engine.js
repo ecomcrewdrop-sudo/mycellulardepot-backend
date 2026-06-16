@@ -1,4 +1,7 @@
 const OpenAI = require('openai');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
 
 class AIEngine {
   constructor(db) {
@@ -9,6 +12,7 @@ class AIEngine {
     this.configCache = null;
     this.configCacheTime = 0;
     this.CONFIG_TTL = 60000;
+    this.REQUEST_TIMEOUT = 30000;
     if (!this.openai) console.warn('[AI] OPENAI_API_KEY not set — AI responses disabled until configured');
   }
 
@@ -105,7 +109,12 @@ ${personality}
    - Genera urgencia real (stock limitado) solo cuando es verdad
    - Facilita el siguiente paso siempre
 
-8. **FORMATO DE RESPUESTA**:
+8. **MENSAJES DE VOZ**:
+   - Cuando el cliente envía un audio, recibes la transcripción del audio.
+   - Responde naturalmente como si lo hubieras escuchado, NUNCA menciones que "leíste la transcripción"
+   - Si la transcripción no es clara, pide amablemente que repita
+
+9. **FORMATO DE RESPUESTA**:
    - Máximo ${config.max_response_length || 500} caracteres por mensaje
    - Escribe en ${lang === 'es' ? 'español' : 'el idioma del cliente'}
    - Un solo bloque de texto, como un mensaje real de WhatsApp
@@ -120,6 +129,36 @@ ${policies}
 - Si el cliente tiene una queja, muestra empatía genuina y ofrece soluciones concretas
 - Si preguntan por envíos, garantía o devoluciones, usa las políticas de la tienda
 - Si el cliente escribe en inglés, responde en inglés naturalmente${inventorySection}${customerSection}`;
+  }
+
+  async transcribeAudio(base64Data, mimetype) {
+    if (!this.openai) {
+      console.error('[AI] OpenAI client not initialized — cannot transcribe audio');
+      return null;
+    }
+
+    const ext = mimetype.includes('ogg') ? 'ogg' : mimetype.includes('mp4') ? 'mp4' : mimetype.includes('mpeg') ? 'mp3' : 'ogg';
+    const tmpFile = path.join(os.tmpdir(), `wa-audio-${Date.now()}.${ext}`);
+
+    try {
+      const buffer = Buffer.from(base64Data, 'base64');
+      fs.writeFileSync(tmpFile, buffer);
+
+      const transcription = await this.openai.audio.transcriptions.create({
+        file: fs.createReadStream(tmpFile),
+        model: 'whisper-1',
+        language: 'es',
+        response_format: 'text',
+      });
+
+      console.log(`[AI] Audio transcribed: "${transcription.substring(0, 80)}..."`);
+      return transcription.trim();
+    } catch (error) {
+      console.error('[AI] Audio transcription error:', error.message);
+      return null;
+    } finally {
+      try { fs.unlinkSync(tmpFile); } catch {}
+    }
   }
 
   async generateResponse({ message, customer, conversationHistory, inventory, config }) {
@@ -144,7 +183,6 @@ ${policies}
       messages.push({ role: 'user', content: message });
     }
 
-    // Ensure messages alternate properly
     const cleanMessages = [];
     for (let i = 0; i < messages.length; i++) {
       if (i === 0 || messages[i].role !== messages[i - 1].role) {
@@ -160,6 +198,9 @@ ${policies}
     }
 
     try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), this.REQUEST_TIMEOUT);
+
       const response = await this.openai.chat.completions.create({
         model: 'gpt-4o',
         max_tokens: 600,
@@ -168,10 +209,28 @@ ${policies}
           ...cleanMessages
         ],
         temperature: 0.8,
-      });
+      }, { signal: controller.signal });
 
+      clearTimeout(timeout);
       return response.choices[0].message.content;
     } catch (error) {
+      clearTimeout?.(undefined);
+
+      if (error.name === 'AbortError') {
+        console.error('[AI] Request timed out after', this.REQUEST_TIMEOUT, 'ms');
+        return this.getFallbackResponse();
+      }
+
+      if (error.status === 429) {
+        console.error('[AI] Rate limited by OpenAI — waiting before retry');
+        return 'Estamos recibiendo muchos mensajes en este momento, dame un momentito y te respondo. 🙏';
+      }
+
+      if (error.status === 402 || error.code === 'insufficient_quota') {
+        console.error('[AI] OpenAI quota exceeded');
+        return 'Disculpa, estamos teniendo un problema técnico temporal. Por favor intenta en unos minutos o escríbenos al número directo. 🙏';
+      }
+
       console.error('[AI] Error generating response:', error.message);
       return this.getFallbackResponse();
     }

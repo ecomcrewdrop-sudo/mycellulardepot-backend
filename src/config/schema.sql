@@ -99,6 +99,10 @@ CREATE TABLE IF NOT EXISTS analytics_events (
 CREATE INDEX IF NOT EXISTS idx_analytics_type ON analytics_events(event_type);
 CREATE INDEX IF NOT EXISTS idx_analytics_time ON analytics_events(created_at DESC);
 
+CREATE INDEX IF NOT EXISTS idx_conv_phone ON conversations(phone);
+CREATE INDEX IF NOT EXISTS idx_msg_wa_id ON messages(wa_message_id);
+CREATE INDEX IF NOT EXISTS idx_cust_email ON customers(email);
+
 -- ── Assistant Configuration ──
 CREATE TABLE IF NOT EXISTS assistant_config (
     key VARCHAR(100) PRIMARY KEY,

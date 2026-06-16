@@ -124,4 +124,22 @@ router.post('/whatsapp/logout', async (req, res) => {
   }
 });
 
+router.post('/whatsapp/restart', async (req, res) => {
+  try {
+    await req.services.whatsapp?.restart();
+    res.json({ message: 'WhatsApp reiniciando' });
+  } catch (err) {
+    res.status(500).json({ error: 'Error reiniciando WhatsApp' });
+  }
+});
+
+router.get('/whatsapp/health', async (req, res) => {
+  try {
+    const health = req.services.whatsapp?.getConnectionHealth() || { status: 'not_initialized' };
+    res.json(health);
+  } catch (err) {
+    res.status(500).json({ error: 'Error obteniendo health de WhatsApp' });
+  }
+});
+
 module.exports = router;

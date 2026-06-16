@@ -4,6 +4,7 @@ const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const path = require('path');
+const rateLimit = require('express-rate-limit');
 
 const db = require('./src/config/database');
 const WhatsAppService = require('./src/services/whatsapp');
@@ -39,6 +40,23 @@ app.use(cors({ origin: allowedOrigins, credentials: true }));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 200,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Demasiadas solicitudes, intenta de nuevo en unos minutos' }
+});
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 15,
+  message: { error: 'Demasiados intentos de login, intenta de nuevo en 15 minutos' }
+});
+
+app.use('/api/', apiLimiter);
+app.use('/api/auth', authLimiter);
+
 const services = {
   db,
   io,
@@ -64,9 +82,10 @@ app.use('/api/conversations', conversationRoutes);
 app.use('/api', apiRoutes);
 
 app.get('/health', (_req, res) => {
+  const waHealth = services.whatsapp?.getConnectionHealth() || { status: 'not_initialized' };
   res.json({
     status: 'ok',
-    whatsapp: services.whatsapp?.getStatus() || 'not_initialized',
+    whatsapp: waHealth,
     uptime: process.uptime(),
     timestamp: new Date().toISOString()
   });
@@ -80,6 +99,22 @@ io.on('connection', (socket) => {
     if (services.whatsapp) {
       const qr = services.whatsapp.getLastQR();
       if (qr) socket.emit('qr', qr);
+      socket.emit('wa-status', {
+        status: services.whatsapp.getStatus(),
+        ...services.whatsapp.getConnectionHealth()
+      });
+    }
+  });
+
+  socket.on('wa-restart', async () => {
+    console.log('[WS] WhatsApp restart requested by client');
+    if (services.whatsapp) {
+      try {
+        await services.whatsapp.restart();
+      } catch (err) {
+        console.error('[WS] Restart error:', err);
+        socket.emit('wa-status', { status: 'error', error: err.message });
+      }
     }
   });
 
@@ -90,9 +125,32 @@ io.on('connection', (socket) => {
 
 // ── WhatsApp Message Handler ──
 async function handleIncomingMessage(message) {
-  const { from, phone, contactName, body, type, messageId } = message;
+  const { from, phone, contactName, body, type, messageId, audioData } = message;
 
   try {
+    let messageBody = body;
+
+    if (audioData && (type === 'ptt' || type === 'audio')) {
+      console.log(`[MSG] Audio received from ${phone}, transcribing...`);
+      const transcription = await services.ai.transcribeAudio(audioData.base64, audioData.mimetype);
+      if (transcription) {
+        messageBody = `[Audio transcrito]: ${transcription}`;
+        console.log(`[MSG] Audio transcribed successfully for ${phone}`);
+      } else {
+        messageBody = '[El cliente envió un audio que no se pudo transcribir]';
+      }
+    }
+
+    if (!messageBody || messageBody.trim() === '') {
+      if (type === 'image') messageBody = '[El cliente envió una imagen]';
+      else if (type === 'video') messageBody = '[El cliente envió un video]';
+      else if (type === 'document') messageBody = '[El cliente envió un documento]';
+      else if (type === 'sticker') messageBody = '[El cliente envió un sticker]';
+      else if (type === 'location') messageBody = '[El cliente compartió una ubicación]';
+      else if (type === 'contact_card') messageBody = '[El cliente compartió un contacto]';
+      else return;
+    }
+
     let customer = await services.crm.findOrCreateCustomer(phone, contactName);
     let conversation = await services.crm.getActiveConversation(customer.id);
 
@@ -101,7 +159,7 @@ async function handleIncomingMessage(message) {
       await services.analytics.track('conversation_started', customer.id, conversation.id);
     }
 
-    await services.crm.saveMessage(conversation.id, 'customer', body, type, messageId);
+    await services.crm.saveMessage(conversation.id, 'customer', messageBody, type, messageId);
     await services.analytics.track('message_received', customer.id, conversation.id);
 
     io.emit('new-message', {
@@ -109,7 +167,7 @@ async function handleIncomingMessage(message) {
       customerId: customer.id,
       phone,
       customerName: customer.name || contactName || phone,
-      content: body,
+      content: messageBody,
       sender: 'customer',
       timestamp: new Date().toISOString()
     });
@@ -117,7 +175,7 @@ async function handleIncomingMessage(message) {
     const config = await services.ai.getConfig();
     const escalationKeywords = JSON.parse(config.escalation_keywords || '[]');
     const needsEscalation = escalationKeywords.some(kw =>
-      body.toLowerCase().includes(kw.toLowerCase())
+      messageBody.toLowerCase().includes(kw.toLowerCase())
     );
 
     if (needsEscalation) {
@@ -130,11 +188,18 @@ async function handleIncomingMessage(message) {
       return;
     }
 
+    if (type === 'image' || type === 'video' || type === 'document' || type === 'sticker' || type === 'location' || type === 'contact_card') {
+      const mediaResponse = 'Recibido, gracias. ¿Hay algo más en lo que pueda ayudarte? 😊';
+      await sendHumanizedResponse(from, mediaResponse, conversation.id, customer.id);
+      return;
+    }
+
     const conversationHistory = await services.crm.getConversationMessages(conversation.id, 20);
-    const inventory = await services.inventory.searchRelevantProducts(body);
+    const aiMessage = audioData ? (messageBody.replace('[Audio transcrito]: ', '')) : messageBody;
+    const inventory = await services.inventory.searchRelevantProducts(aiMessage);
 
     const aiResponse = await services.ai.generateResponse({
-      message: body,
+      message: aiMessage,
       customer,
       conversationHistory,
       inventory,
