@@ -1,6 +1,5 @@
 [phases.setup]
-nixPkgs = ["chromium"]
-aptPkgs = ["libgbm1", "libnss3", "libatk-bridge2.0-0", "libx11-xcb1", "libxcomposite1", "libxdamage1", "libxrandr2", "libpango-1.0-0", "libcairo2", "libasound2t64", "libxshmfence1", "libcups2t64", "libdrm2", "libxkbcommon0", "libatspi2.0-0t64"]
+aptPkgs = ["chromium-browser", "libgbm1", "libnss3", "libatk-bridge2.0-0", "libx11-xcb1", "libxcomposite1", "libxdamage1", "libxrandr2", "libpango-1.0-0", "libcairo2", "libasound2t64", "libxshmfence1", "libcups2t64", "libdrm2", "libxkbcommon0", "libatspi2.0-0t64"]
 
 [phases.install]
 cmds = ["npm install"]
